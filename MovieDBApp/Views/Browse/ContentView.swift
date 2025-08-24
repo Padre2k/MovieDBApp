@@ -12,8 +12,9 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var prefs: Preferences
     @StateObject private var vm = MoviesViewModel()
+    @StateObject private var libVM = LibraryViewModel()
     @State private var showKeySheet = false
-
+    
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -21,7 +22,7 @@ struct ContentView: View {
                 filterChips
                 Divider()
                 contentList
-            } //: VStack
+            }
             .navigationTitle("OMDb Genres")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -30,7 +31,13 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { vm.load(for: vm.selectedGenre, prefs: prefs) } label: {
+                    Button {
+                        if vm.displayFilter == .all {
+                            vm.load(for: vm.selectedGenre, prefs: prefs)
+                        } else {
+                            libVM.refresh(prefs: prefs)
+                        }
+                    } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                     .disabled(prefs.apiKey.isEmpty)
@@ -41,22 +48,27 @@ struct ContentView: View {
                     .presentationDetents([.medium])
             }
             .onAppear {
-                if !prefs.apiKey.isEmpty, vm.movies.isEmpty {
-                    vm.load(for: .Action, prefs: prefs)
+                if !prefs.apiKey.isEmpty {
+                    if vm.movies.isEmpty { vm.load(for: .Action, prefs: prefs) }
+                    libVM.refresh(prefs: prefs)
                 }
             }
-        } //: NavigationStack
+            .onChange(of: prefs.liked) { _, _ in libVM.refresh(prefs: prefs) }
+            .onChange(of: prefs.watchlist) { _, _ in libVM.refresh(prefs: prefs) }
+            .onChange(of: prefs.apiKey) { _, _ in libVM.refresh(prefs: prefs) }
+        }
     }
-
-   
-    
     
     private var genreChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(Genre.allCases) { genre in
                     Button {
-                        vm.load(for: genre, prefs: prefs)
+                        vm.selectedGenre = genre
+                        if vm.displayFilter == .all {
+                            vm.load(for: genre, prefs: prefs) // Browse refetch
+                        }
+                        // In Liked/Watchlist modes, genre only acts as a filter (no refetch needed)
                     } label: {
                         Text(genre.rawValue)
                             .font(.callout.weight(.semibold))
@@ -78,7 +90,7 @@ struct ContentView: View {
             .padding(.bottom, 6)
         }
     }
-
+    
     private var filterChips: some View {
         HStack(spacing: 8) {
             ForEach(DisplayFilter.allCases) { filter in
@@ -88,12 +100,10 @@ struct ContentView: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(
-                            Capsule()
-                                .fill(filter == vm.displayFilter ? Color.accentColor.opacity(0.18) : Color.gray.opacity(0.12))
+                            Capsule().fill(filter == vm.displayFilter ? Color.accentColor.opacity(0.18) : Color.gray.opacity(0.12))
                         )
                         .overlay(
-                            Capsule()
-                                .stroke(filter == vm.displayFilter ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: 1)
+                            Capsule().stroke(filter == vm.displayFilter ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: 1)
                         )
                 }
             }
@@ -102,7 +112,7 @@ struct ContentView: View {
         .padding(.horizontal)
         .padding(.bottom, 6)
     }
-
+    
     @ViewBuilder
     private var contentList: some View {
         if prefs.apiKey.isEmpty {
@@ -115,18 +125,31 @@ struct ContentView: View {
                     .padding(.horizontal)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if vm.loading {
+            
+        } else if vm.displayFilter != .all, libVM.loading {
+            ProgressView("Loading your library…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            
+        } else if vm.displayFilter == .all, vm.loading {
             ProgressView("Loading \(vm.selectedGenre.rawValue) movies…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let message = vm.errorMessage {
+            
+        } else if let message = (vm.displayFilter == .all ? vm.errorMessage : libVM.errorMessage) {
             VStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle").font(.system(size: 40))
                 Text(message).multilineTextAlignment(.center).padding(.horizontal)
-                Button("Try Again") { vm.load(for: vm.selectedGenre, prefs: prefs) }
+                Button("Try Again") {
+                    if vm.displayFilter == .all {
+                        vm.load(for: vm.selectedGenre, prefs: prefs)
+                    } else {
+                        libVM.refresh(prefs: prefs)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            
         } else {
-            List(filteredMovies(prefs: prefs)) { movie in
+            List(filteredMovies()) { movie in
                 NavigationLink {
                     MovieDetailView(movie: movie)
                 } label: {
@@ -142,12 +165,15 @@ struct ContentView: View {
             .listStyle(.plain)
         }
     }
-
-    private func filteredMovies(prefs: Preferences) -> [MovieDetail] {
+    
+    private func filteredMovies() -> [MovieDetail] {
         switch vm.displayFilter {
-        case .all: return vm.movies
-        case .liked: return vm.movies.filter { prefs.liked.contains($0.imdbID) }
-        case .watchlist: return vm.movies.filter { prefs.watchlist.contains($0.imdbID) }
+        case .all:
+            return vm.movies
+        case .liked:
+            return libVM.likedFiltered(by: vm.selectedGenre)      // <- single-genre filter applied
+        case .watchlist:
+            return libVM.watchlistFiltered(by: vm.selectedGenre)  // <- single-genre filter applied
         }
     }
 }
